@@ -32,6 +32,7 @@ El instalador preguntara:
 
 - Token del bot de Telegram.
 - `chat_id` autorizado.
+- Si quieres permitir controlar todos los servicios systemd instalados.
 - Servicios permitidos, por ejemplo `ssh,nginx,docker`.
 - Ruta de instalacion, por defecto `/opt/debian-telegram-admin-bot`.
 - Nombre del servicio systemd, por defecto `debian-telegram-admin-bot`.
@@ -221,6 +222,44 @@ sudo systemctl restart debian-telegram-admin-bot.service
 ```
 
 El nombre del servicio debe empezar con letra o numero y solo puede contener letras, numeros, `_`, `-`, `.`, o `@`.
+
+## Permitir todos los servicios systemd
+
+Si quieres que el bot pueda ver estado, iniciar, detener y reiniciar cualquier servicio systemd instalado en Debian, activa el modo amplio:
+
+```bash
+sudo nano /opt/debian-telegram-admin-bot/.env
+```
+
+Configura:
+
+```env
+ALLOW_ALL_SYSTEMD_SERVICES=true
+ALLOWED_SERVICES=
+```
+
+Despues regenera sudoers con la marca especial que enumera los servicios instalados:
+
+```bash
+sudo bash /opt/debian-telegram-admin-bot/scripts/create_sudoers.sh \
+  debianbot \
+  /etc/sudoers.d/debian-telegram-admin-bot \
+  "__ALL_SYSTEMD_SERVICES__"
+
+sudo visudo -c
+sudo systemctl restart debian-telegram-admin-bot.service
+```
+
+En este modo puedes usar comandos como:
+
+```text
+/service_status nginx
+/service_restart apache2
+/service_stop docker
+/service_start ssh
+```
+
+Si instalas servicios nuevos despues, vuelve a ejecutar `create_sudoers.sh` con `__ALL_SYSTEMD_SERVICES__` para que sudoers incluya las nuevas unidades.
 
 ## Logs
 

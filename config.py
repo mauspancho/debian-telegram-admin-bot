@@ -45,6 +45,7 @@ class BotConfig:
     telegram_bot_token: str
     authorized_chat_id: int | None
     registration_mode: bool
+    allow_all_systemd_services: bool
     allowed_services: list[str]
     service_name: str
     install_path: Path
@@ -85,6 +86,9 @@ def load_config() -> BotConfig:
         telegram_bot_token=token,
         authorized_chat_id=authorized_chat_id,
         registration_mode=registration_mode,
+        allow_all_systemd_services=_bool_from_env(
+            os.getenv("ALLOW_ALL_SYSTEMD_SERVICES"), False
+        ),
         allowed_services=_services_from_env(os.getenv("ALLOWED_SERVICES")),
         service_name=os.getenv("SERVICE_NAME", "debian-telegram-admin-bot").strip()
         or "debian-telegram-admin-bot",

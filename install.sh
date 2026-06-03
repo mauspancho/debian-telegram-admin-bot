@@ -119,15 +119,17 @@ write_env() {
   local token="$2"
   local chat_id="$3"
   local registration_mode="$4"
-  local services="$5"
-  local service_name="$6"
-  local install_path="$7"
+  local allow_all_services="$5"
+  local services="$6"
+  local service_name="$7"
+  local install_path="$8"
 
   umask 077
   cat > "$env_file" <<EOF
 TELEGRAM_BOT_TOKEN=$token
 AUTHORIZED_CHAT_ID=$chat_id
 REGISTRATION_MODE=$registration_mode
+ALLOW_ALL_SYSTEMD_SERVICES=$allow_all_services
 ALLOWED_SERVICES=$services
 SERVICE_NAME=$service_name
 INSTALL_PATH=$install_path
@@ -191,9 +193,20 @@ main() {
     exit 1
   fi
 
-  read -r -p "Servicios permitidos separados por coma [palworld,docker,ssh]: " services
-  services="${services:-palworld,docker,ssh}"
-  validate_service_csv "$services"
+  read -r -p "Permitir controlar todos los servicios systemd instalados? [s/N]: " allow_all_answer
+  allow_all_services="false"
+  services_marker=""
+  if [[ "$allow_all_answer" =~ ^[sSyY]$ ]]; then
+    allow_all_services="true"
+    services=""
+    services_marker="__ALL_SYSTEMD_SERVICES__"
+    echo "Se generara sudoers para todos los servicios systemd instalados actualmente."
+  else
+    read -r -p "Servicios permitidos separados por coma [palworld,docker,ssh]: " services
+    services="${services:-palworld,docker,ssh}"
+    validate_service_csv "$services"
+    services_marker="$services"
+  fi
 
   install_path="$(prompt "Ruta de instalacion" "$DEFAULT_INSTALL_PATH")"
   service_name="$(prompt "Nombre del servicio systemd" "$DEFAULT_SERVICE_NAME")"
@@ -219,7 +232,7 @@ main() {
   "$install_path/venv/bin/python" -m pip install --upgrade pip
   "$install_path/venv/bin/pip" install -r "$install_path/requirements.txt"
 
-  write_env "$install_path/.env" "$token" "$chat_id" "$registration_mode" "$services" "$service_name" "$install_path"
+  write_env "$install_path/.env" "$token" "$chat_id" "$registration_mode" "$allow_all_services" "$services" "$service_name" "$install_path"
   chown -R root:root "$install_path"
   install -d -o "$bot_user" -g "$bot_user" -m 0750 "$install_path/logs"
   chown root:"$bot_user" "$install_path/.env"
@@ -227,14 +240,14 @@ main() {
   chmod 0755 "$install_path"
   chmod +x "$install_path/install.sh" "$install_path/uninstall.sh" "$install_path/scripts/"*.sh
 
-  "$install_path/scripts/create_sudoers.sh" "$bot_user" "/etc/sudoers.d/$SUDOERS_NAME" "$services"
+  bash "$install_path/scripts/create_sudoers.sh" "$bot_user" "/etc/sudoers.d/$SUDOERS_NAME" "$services_marker"
   visudo -c >/dev/null
 
   write_systemd_unit "/etc/systemd/system/${service_name}.service" "$service_name" "$bot_user" "$install_path"
   systemctl daemon-reload
   systemctl enable --now "${service_name}.service"
 
-  "$install_path/scripts/validate_install.sh" "$install_path"
+  bash "$install_path/scripts/validate_install.sh" "$install_path"
 
   echo
   echo "Instalacion completada."

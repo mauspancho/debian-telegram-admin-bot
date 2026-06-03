@@ -18,6 +18,7 @@ The format is based on Keep a Changelog, and this project follows semantic versi
 - Sudoers generator with command-specific permissions.
 - Local rotating logs.
 - GitHub-ready documentation and community files.
+- Optional `ALLOW_ALL_SYSTEMD_SERVICES=true` mode to control installed systemd services without listing each service manually.
 
 ### Security
 

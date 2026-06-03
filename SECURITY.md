@@ -39,6 +39,7 @@ The bot is designed for a narrow administration surface:
 - Use a private 1:1 chat id where possible.
 - Enable 2FA on the Telegram account that controls the bot.
 - Keep `ALLOWED_SERVICES` minimal.
+- Use `ALLOW_ALL_SYSTEMD_SERVICES=true` only on servers where the authorized Telegram account is trusted to control every installed service.
 - Review `/etc/sudoers.d/debian-telegram-admin-bot` after installation.
 - Keep `.env` out of Git and restrict file permissions.
 - Periodically review `journalctl` and local bot logs.

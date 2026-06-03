@@ -173,7 +173,13 @@ async def list_services(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     del context
     if not await require_authorized(update):
         return
-    await send_text(update, services.list_services(CONFIG.allowed_services))
+    text = await asyncio.to_thread(
+        services.list_services,
+        CONFIG.allowed_services,
+        CONFIG.allow_all_systemd_services,
+        CONFIG.command_timeout_seconds,
+    )
+    await send_text(update, text)
 
 
 async def service_command(
@@ -189,7 +195,10 @@ async def service_command(
         await send_text(update, f"Uso: /service_{action} nombre")
         return
     valid, service_or_error = services.validate_service(
-        args[0], CONFIG.allowed_services
+        args[0],
+        CONFIG.allowed_services,
+        CONFIG.allow_all_systemd_services,
+        CONFIG.command_timeout_seconds,
     )
     if not valid:
         await send_text(update, service_or_error)
@@ -245,7 +254,10 @@ async def service_logs(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await send_text(update, "Uso: /service_logs nombre")
         return
     valid, service_or_error = services.validate_service(
-        args[0], CONFIG.allowed_services
+        args[0],
+        CONFIG.allowed_services,
+        CONFIG.allow_all_systemd_services,
+        CONFIG.command_timeout_seconds,
     )
     if not valid:
         await send_text(update, service_or_error)
