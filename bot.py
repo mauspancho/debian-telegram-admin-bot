@@ -6,8 +6,14 @@ import re
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-from telegram import Update
-from telegram.ext import Application, ApplicationBuilder, CommandHandler, ContextTypes
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.ext import (
+    Application,
+    ApplicationBuilder,
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
+)
 
 from config import BotConfig, load_config
 from modules import docker, services, system, updates
@@ -18,6 +24,7 @@ CONFIG: BotConfig = load_config()
 CONFIRMATIONS = ConfirmationManager(CONFIG.confirm_ttl_seconds)
 LOGGER = logging.getLogger("debian-telegram-admin-bot")
 CONFIRM_TOKEN_RE = re.compile(r"^[a-f0-9]{8}$")
+SERVICES_PER_PAGE = 8
 
 
 def setup_logging(log_file: Path) -> None:
@@ -41,13 +48,21 @@ def is_authorized(update: Update) -> bool:
     return CONFIG.authorized_chat_id is not None and cid == CONFIG.authorized_chat_id
 
 
-async def send_text(update: Update, text: str) -> None:
+async def send_text(
+    update: Update,
+    text: str,
+    reply_markup: InlineKeyboardMarkup | None = None,
+) -> None:
     if not update.effective_message:
         return
     limit = max(500, CONFIG.max_telegram_message_length)
     clean = text.strip() or "(sin salida)"
     for start in range(0, len(clean), limit):
-        await update.effective_message.reply_text(clean[start : start + limit])
+        markup = reply_markup if start == 0 else None
+        await update.effective_message.reply_text(
+            clean[start : start + limit],
+            reply_markup=markup,
+        )
 
 
 async def deny(update: Update) -> None:
@@ -89,6 +104,110 @@ def help_text() -> str:
     )
 
 
+def main_menu_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("Sistema", callback_data="menu:system"),
+                InlineKeyboardButton("Servicios", callback_data="svcpage:0"),
+            ],
+            [
+                InlineKeyboardButton("Docker", callback_data="act:docker_ps"),
+                InlineKeyboardButton("Actualizaciones", callback_data="menu:updates"),
+            ],
+            [
+                InlineKeyboardButton("Ayuda", callback_data="menu:help"),
+                InlineKeyboardButton("Whoami", callback_data="act:whoami"),
+            ],
+        ]
+    )
+
+
+def system_menu_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("Status", callback_data="act:status"),
+                InlineKeyboardButton("RAM", callback_data="act:ram"),
+            ],
+            [
+                InlineKeyboardButton("Disco", callback_data="act:disk"),
+                InlineKeyboardButton("IP", callback_data="act:ip"),
+            ],
+            [
+                InlineKeyboardButton("Procesos", callback_data="act:processes"),
+                InlineKeyboardButton("Volver", callback_data="menu:main"),
+            ],
+        ]
+    )
+
+
+def updates_menu_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("Buscar updates", callback_data="act:updates")],
+            [
+                InlineKeyboardButton("Upgrade", callback_data="danger:upgrade"),
+                InlineKeyboardButton("Reboot", callback_data="danger:reboot"),
+            ],
+            [InlineKeyboardButton("Volver", callback_data="menu:main")],
+        ]
+    )
+
+
+def service_action_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("Status", callback_data="svcaction:status"),
+                InlineKeyboardButton("Start", callback_data="svcaction:start"),
+            ],
+            [
+                InlineKeyboardButton("Stop", callback_data="svcaction:stop"),
+                InlineKeyboardButton("Restart", callback_data="svcaction:restart"),
+            ],
+            [
+                InlineKeyboardButton("Logs", callback_data="svcaction:logs"),
+                InlineKeyboardButton("Servicios", callback_data="svcpage:0"),
+            ],
+            [InlineKeyboardButton("Menu", callback_data="menu:main")],
+        ]
+    )
+
+
+def service_page_keyboard(service_names: list[str], page: int) -> InlineKeyboardMarkup:
+    total_pages = max(1, (len(service_names) + SERVICES_PER_PAGE - 1) // SERVICES_PER_PAGE)
+    page = max(0, min(page, total_pages - 1))
+    start = page * SERVICES_PER_PAGE
+    rows = [
+        [InlineKeyboardButton(name, callback_data=f"svcsel:{page}:{idx}")]
+        for idx, name in enumerate(service_names[start : start + SERVICES_PER_PAGE])
+    ]
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("Anterior", callback_data=f"svcpage:{page - 1}"))
+    if page < total_pages - 1:
+        nav.append(InlineKeyboardButton("Siguiente", callback_data=f"svcpage:{page + 1}"))
+    if nav:
+        rows.append(nav)
+    rows.append([InlineKeyboardButton("Menu", callback_data="menu:main")])
+    return InlineKeyboardMarkup(rows)
+
+
+def configured_service_names() -> list[str]:
+    if CONFIG.allow_all_systemd_services:
+        return services.installed_services(CONFIG.command_timeout_seconds)
+    return list(CONFIG.allowed_services)
+
+
+async def show_main_menu(update: Update) -> None:
+    await send_text(
+        update,
+        "Menu principal. Tambien puedes seguir usando comandos como /status o /service_restart nginx.",
+        main_menu_keyboard(),
+    )
+
+
 async def require_authorized(update: Update) -> bool:
     if is_authorized(update):
         return True
@@ -107,14 +226,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     if not await require_authorized(update):
         return
-    await send_text(update, help_text())
+    await show_main_menu(update)
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     del context
     if not await require_authorized(update):
         return
-    await send_text(update, help_text())
+    await send_text(update, help_text(), main_menu_keyboard())
 
 
 async def whoami(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -338,6 +457,227 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await send_text(update, result.output)
 
 
+async def reply_callback(
+    update: Update,
+    text: str,
+    reply_markup: InlineKeyboardMarkup | None = None,
+) -> None:
+    if update.callback_query and update.callback_query.message:
+        await update.callback_query.message.reply_text(text, reply_markup=reply_markup)
+
+
+async def show_service_page(update: Update, page: int) -> None:
+    service_names = await asyncio.to_thread(configured_service_names)
+    if not service_names:
+        await reply_callback(
+            update,
+            "No hay servicios disponibles. Revisa ALLOW_ALL_SYSTEMD_SERVICES o ALLOWED_SERVICES.",
+            main_menu_keyboard(),
+        )
+        return
+    service_names = sorted(service_names)
+    total_pages = max(1, (len(service_names) + SERVICES_PER_PAGE - 1) // SERVICES_PER_PAGE)
+    page = max(0, min(page, total_pages - 1))
+    await reply_callback(
+        update,
+        f"Servicios systemd ({len(service_names)}). Pagina {page + 1}/{total_pages}.",
+        service_page_keyboard(service_names, page),
+    )
+
+
+async def select_service(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str) -> None:
+    try:
+        _, page_raw, idx_raw = data.split(":", 2)
+        page = int(page_raw)
+        idx = int(idx_raw)
+    except ValueError:
+        await reply_callback(update, "Seleccion de servicio invalida.", main_menu_keyboard())
+        return
+
+    service_names = sorted(await asyncio.to_thread(configured_service_names))
+    absolute_idx = page * SERVICES_PER_PAGE + idx
+    if absolute_idx < 0 or absolute_idx >= len(service_names):
+        await reply_callback(update, "Servicio fuera de rango.", main_menu_keyboard())
+        return
+
+    service = service_names[absolute_idx]
+    valid, service_or_error = services.validate_service(
+        service,
+        CONFIG.allowed_services,
+        CONFIG.allow_all_systemd_services,
+        CONFIG.command_timeout_seconds,
+    )
+    if not valid:
+        await reply_callback(update, service_or_error, main_menu_keyboard())
+        return
+
+    context.user_data["selected_service"] = service_or_error
+    await reply_callback(
+        update,
+        f"Servicio seleccionado: {service_or_error}",
+        service_action_keyboard(),
+    )
+
+
+async def execute_service_button(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    action: str,
+) -> None:
+    service = context.user_data.get("selected_service")
+    if not isinstance(service, str) or not service:
+        await reply_callback(update, "Primero selecciona un servicio.", InlineKeyboardMarkup(
+            [[InlineKeyboardButton("Servicios", callback_data="svcpage:0")]]
+        ))
+        return
+
+    valid, service_or_error = services.validate_service(
+        service,
+        CONFIG.allowed_services,
+        CONFIG.allow_all_systemd_services,
+        CONFIG.command_timeout_seconds,
+    )
+    if not valid:
+        await reply_callback(update, service_or_error, main_menu_keyboard())
+        return
+
+    service = service_or_error
+    description = f"systemctl {action} {service}"
+
+    if action == "logs":
+        LOGGER.info("Boton journalctl para %s chat_id=%s", service, chat_id(update))
+        result = await asyncio.to_thread(
+            services.logs,
+            service,
+            CONFIG.command_timeout_seconds,
+            CONFIG.max_telegram_message_length,
+        )
+        await reply_callback(update, result.output, service_action_keyboard())
+        return
+
+    def execute() -> system.CommandResult:
+        return services.systemctl(
+            action,
+            service,
+            CONFIG.command_timeout_seconds,
+            CONFIG.max_telegram_message_length,
+        )
+
+    if action in {"stop", "restart"}:
+        pending = CONFIRMATIONS.create(chat_id(update) or 0, description, execute)
+        LOGGER.info("Confirmacion creada desde boton para %s chat_id=%s", description, chat_id(update))
+        await reply_callback(
+            update,
+            f"Accion peligrosa: {description}\n"
+            f"Confirma en {CONFIG.confirm_ttl_seconds}s con:\n/confirm {pending.token}",
+            service_action_keyboard(),
+        )
+        return
+
+    LOGGER.info("Ejecutando boton %s chat_id=%s", description, chat_id(update))
+    result = await asyncio.to_thread(execute)
+    await reply_callback(update, result.output, service_action_keyboard())
+
+
+async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    if not query:
+        return
+    await query.answer()
+    if not is_authorized(update):
+        LOGGER.warning("Acceso denegado callback chat_id=%s", chat_id(update))
+        await reply_callback(update, "Acceso denegado.")
+        return
+
+    data = query.data or ""
+
+    if data == "menu:main":
+        await reply_callback(update, "Menu principal.", main_menu_keyboard())
+        return
+    if data == "menu:help":
+        await reply_callback(update, help_text(), main_menu_keyboard())
+        return
+    if data == "menu:system":
+        await reply_callback(update, "Sistema", system_menu_keyboard())
+        return
+    if data == "menu:updates":
+        await reply_callback(update, "Actualizaciones y reinicio", updates_menu_keyboard())
+        return
+    if data.startswith("svcpage:"):
+        try:
+            page = int(data.split(":", 1)[1])
+        except ValueError:
+            page = 0
+        await show_service_page(update, page)
+        return
+    if data.startswith("svcsel:"):
+        await select_service(update, context, data)
+        return
+    if data.startswith("svcaction:"):
+        action = data.split(":", 1)[1]
+        if action not in {"status", "start", "stop", "restart", "logs"}:
+            await reply_callback(update, "Accion de servicio invalida.", main_menu_keyboard())
+            return
+        await execute_service_button(update, context, action)
+        return
+
+    readonly_actions = {
+        "act:status": ("status", system.status, system_menu_keyboard()),
+        "act:ram": ("ram", system.ram, system_menu_keyboard()),
+        "act:disk": ("disk", system.disk, system_menu_keyboard()),
+        "act:ip": ("ip", system.local_ip, system_menu_keyboard()),
+        "act:processes": ("processes", system.processes, system_menu_keyboard()),
+        "act:docker_ps": ("docker_ps", docker.docker_ps, main_menu_keyboard()),
+        "act:updates": ("updates", updates.list_updates, updates_menu_keyboard()),
+    }
+    if data in readonly_actions:
+        description, func, keyboard = readonly_actions[data]
+        LOGGER.info("Ejecutando boton %s chat_id=%s", description, chat_id(update))
+        result = await asyncio.to_thread(
+            func,
+            CONFIG.command_timeout_seconds,
+            CONFIG.max_telegram_message_length,
+        )
+        await reply_callback(update, result.output, keyboard)
+        return
+    if data == "act:whoami":
+        await reply_callback(update, f"Tu chat_id es: {chat_id(update)}", main_menu_keyboard())
+        return
+    if data == "danger:upgrade":
+        def execute_upgrade() -> system.CommandResult:
+            return updates.upgrade(
+                CONFIG.command_timeout_seconds * 20,
+                CONFIG.max_telegram_message_length,
+            )
+
+        pending = CONFIRMATIONS.create(chat_id(update) or 0, "apt upgrade -y", execute_upgrade)
+        await reply_callback(
+            update,
+            f"Accion peligrosa: apt upgrade -y\n"
+            f"Confirma en {CONFIG.confirm_ttl_seconds}s con:\n/confirm {pending.token}",
+            updates_menu_keyboard(),
+        )
+        return
+    if data == "danger:reboot":
+        def execute_reboot() -> system.CommandResult:
+            return system.run_command(
+                ["sudo", "/usr/sbin/reboot"],
+                timeout=CONFIG.command_timeout_seconds,
+                max_chars=CONFIG.max_telegram_message_length,
+            )
+
+        pending = CONFIRMATIONS.create(chat_id(update) or 0, "reboot", execute_reboot)
+        await reply_callback(
+            update,
+            f"Accion peligrosa: reiniciar el servidor\n"
+            f"Confirma en {CONFIG.confirm_ttl_seconds}s con:\n/confirm {pending.token}",
+            updates_menu_keyboard(),
+        )
+        return
+
+    await reply_callback(update, "Boton no reconocido.", main_menu_keyboard())
+
+
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     LOGGER.exception("Error no controlado", exc_info=context.error)
     if isinstance(update, Update) and update.effective_message:
@@ -369,6 +709,7 @@ def build_application() -> Application:
     }
     for name, handler in handlers.items():
         app.add_handler(CommandHandler(name, handler))
+    app.add_handler(CallbackQueryHandler(button_callback))
     app.add_error_handler(error_handler)
     return app
 

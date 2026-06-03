@@ -17,6 +17,7 @@ Bot de Telegram para administrar tareas concretas de un servidor Debian 12/13 de
 - Salida recortada para evitar mensajes demasiado grandes.
 - Logs locales rotativos y logs via `journalctl`.
 - Instalador y desinstalador interactivos.
+- Menu interactivo con botones de Telegram desde `/start`.
 
 ## Instalacion rapida
 
@@ -78,6 +79,8 @@ sudo systemctl restart debian-telegram-admin-bot.service
 ```
 
 ## Tabla de comandos
+
+Tambien puedes usar el menu con botones ejecutando `/start`.
 
 | Comando | Descripcion | Requiere confirmacion |
 | --- | --- | --- |
@@ -340,7 +343,25 @@ Comprueba que el comando solicitado coincide exactamente con lo generado en `/et
 
 ### Docker no lista contenedores
 
-`/docker_ps` no usa sudo. Si `debianbot` no tiene permisos sobre Docker, mostrara error. Agregarlo al grupo `docker` es una decision sensible porque puede equivaler a root.
+`/docker_ps` usa sudoers limitado para ejecutar solo:
+
+```bash
+/usr/bin/docker ps *
+```
+
+Si venias de una instalacion anterior y recibes permiso denegado contra `/var/run/docker.sock`, regenera sudoers:
+
+```bash
+sudo bash /opt/debian-telegram-admin-bot/scripts/create_sudoers.sh \
+  debianbot \
+  /etc/sudoers.d/debian-telegram-admin-bot \
+  "__ALL_SYSTEMD_SERVICES__"
+
+sudo visudo -c
+sudo systemctl restart debian-telegram-admin-bot.service
+```
+
+No agregues `debianbot` al grupo `docker` salvo que aceptes el riesgo equivalente a root.
 
 ### `apt upgrade` tarda demasiado
 

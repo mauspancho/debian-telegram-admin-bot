@@ -115,7 +115,7 @@ trap 'rm -f "$TMP_FILE"' EXIT
   echo "Defaults:${BOT_USER} !requiretty"
   echo
 
-  COMMAND_ALIASES=("DEBIAN_BOT_APT" "DEBIAN_BOT_REBOOT")
+  COMMAND_ALIASES=("DEBIAN_BOT_DOCKER" "DEBIAN_BOT_APT" "DEBIAN_BOT_REBOOT")
 
   systemctl_cmds=()
   journal_cmds=()
@@ -133,6 +133,7 @@ trap 'rm -f "$TMP_FILE"' EXIT
 
   echo "Cmnd_Alias DEBIAN_BOT_APT = /usr/bin/apt update, /usr/bin/apt list --upgradable, /usr/bin/apt upgrade -y"
   echo "Cmnd_Alias DEBIAN_BOT_REBOOT = /usr/sbin/reboot"
+  echo "Cmnd_Alias DEBIAN_BOT_DOCKER = /usr/bin/docker ps *"
   echo
 
   aliases_joined=""

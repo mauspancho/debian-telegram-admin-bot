@@ -1,14 +1,17 @@
 from __future__ import annotations
 
-from modules.system import CommandResult, command_exists, run_command
+from pathlib import Path
+
+from modules.system import CommandResult, run_command
 
 
 def docker_ps(timeout: int, max_chars: int) -> CommandResult:
-    if not command_exists("docker"):
-        return CommandResult(False, "Docker no esta instalado o no esta en PATH.")
+    if not Path("/usr/bin/docker").exists():
+        return CommandResult(False, "Docker no esta instalado en /usr/bin/docker.")
     return run_command(
         [
-            "docker",
+            "sudo",
+            "/usr/bin/docker",
             "ps",
             "--format",
             "table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}",

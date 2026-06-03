@@ -98,14 +98,28 @@ def disk(timeout: int, max_chars: int) -> CommandResult:
 
 
 def local_ip(timeout: int, max_chars: int) -> CommandResult:
-    hostname_cmd = which("hostname")
-    if hostname_cmd:
-        return run_command(
-            [hostname_cmd, "-I"],
-            timeout=timeout,
-            max_chars=max_chars,
-        )
-    return CommandResult(False, "No se pudo obtener la IP local")
+    ip_cmd = which("ip") or "/usr/sbin/ip"
+    ip_result = run_command(
+        [ip_cmd, "-o", "-4", "addr", "show", "scope", "global"],
+        timeout=timeout,
+        max_chars=max_chars,
+    )
+    if ip_result.ok and ip_result.output != "(sin salida)":
+        lines = []
+        for raw in ip_result.output.splitlines():
+            parts = raw.split()
+            if len(parts) >= 4:
+                lines.append(f"{parts[1]}: {parts[3]}")
+        if lines:
+            return CommandResult(True, "IPv4 locales:\n" + "\n".join(lines))
+
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.settimeout(2)
+            sock.connect(("1.1.1.1", 80))
+            return CommandResult(True, f"IP local principal: {sock.getsockname()[0]}")
+    except OSError as exc:
+        return CommandResult(False, f"No se pudo obtener la IP local: {exc}")
 
 
 def processes(timeout: int, max_chars: int) -> CommandResult:
