@@ -8,6 +8,7 @@ from pathlib import Path
 
 from telegram import (
     BotCommand,
+    BotCommandScopeChat,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     MenuButtonCommands,
@@ -240,6 +241,30 @@ async def show_main_menu(update: Update) -> None:
     )
 
 
+async def configure_native_menu(application: Application, cid: int | None = None) -> None:
+    if cid is None:
+        await application.bot.set_my_commands(BOT_COMMANDS)
+        await application.bot.set_chat_menu_button(menu_button=MenuButtonCommands())
+        return
+
+    scope = BotCommandScopeChat(chat_id=cid)
+    await application.bot.set_my_commands(BOT_COMMANDS, scope=scope)
+    await application.bot.set_chat_menu_button(
+        chat_id=cid,
+        menu_button=MenuButtonCommands(),
+    )
+
+
+async def ensure_chat_native_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    cid = chat_id(update)
+    if cid is None:
+        return
+    try:
+        await configure_native_menu(context.application, cid)
+    except Exception:
+        LOGGER.exception("No se pudo configurar el menu nativo para chat_id=%s", cid)
+
+
 async def require_authorized(update: Update) -> bool:
     if is_authorized(update):
         return True
@@ -248,7 +273,6 @@ async def require_authorized(update: Update) -> bool:
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    del context
     if CONFIG.registration_mode and CONFIG.authorized_chat_id is None:
         await send_text(
             update,
@@ -258,20 +282,21 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     if not await require_authorized(update):
         return
+    await ensure_chat_native_menu(update, context)
     await show_main_menu(update)
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    del context
     if not await require_authorized(update):
         return
+    await ensure_chat_native_menu(update, context)
     await send_text(update, help_text(), main_menu_keyboard())
 
 
 async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    del context
     if not await require_authorized(update):
         return
+    await ensure_chat_native_menu(update, context)
     await show_main_menu(update)
 
 
@@ -857,8 +882,9 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 
 async def post_init(application: Application) -> None:
     try:
-        await application.bot.set_my_commands(BOT_COMMANDS)
-        await application.bot.set_chat_menu_button(menu_button=MenuButtonCommands())
+        await configure_native_menu(application)
+        if CONFIG.authorized_chat_id is not None:
+            await configure_native_menu(application, CONFIG.authorized_chat_id)
         LOGGER.info("Menu nativo de comandos configurado")
     except Exception:
         LOGGER.exception("No se pudo configurar el menu nativo de Telegram")
