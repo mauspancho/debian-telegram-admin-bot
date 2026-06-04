@@ -6,7 +6,13 @@ import re
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import (
+    BotCommand,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    MenuButtonCommands,
+    Update,
+)
 from telegram.ext import (
     Application,
     ApplicationBuilder,
@@ -24,6 +30,19 @@ CONFIG: BotConfig = load_config()
 CONFIRMATIONS = ConfirmationManager(CONFIG.confirm_ttl_seconds)
 LOGGER = logging.getLogger("debian-telegram-admin-bot")
 CONFIRM_TOKEN_RE = re.compile(r"^[a-f0-9]{8}$")
+BOT_COMMANDS = [
+    BotCommand("start", "Abrir menu principal"),
+    BotCommand("menu", "Abrir menu principal"),
+    BotCommand("help", "Ver ayuda"),
+    BotCommand("whoami", "Mostrar tu chat_id"),
+    BotCommand("status", "Estado general del servidor"),
+    BotCommand("ram", "Uso de memoria"),
+    BotCommand("disk", "Uso de disco"),
+    BotCommand("ip", "Mostrar IP local"),
+    BotCommand("services", "Listar servicios"),
+    BotCommand("docker_ps", "Abrir menu Docker"),
+    BotCommand("updates", "Buscar actualizaciones"),
+]
 
 def setup_logging(log_file: Path) -> None:
     log_file.parent.mkdir(parents=True, exist_ok=True)
@@ -247,6 +266,13 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if not await require_authorized(update):
         return
     await send_text(update, help_text(), main_menu_keyboard())
+
+
+async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    del context
+    if not await require_authorized(update):
+        return
+    await show_main_menu(update)
 
 
 async def whoami(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -829,10 +855,20 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
         await send_text(update, "Ocurrio un error interno. Revisa los logs del bot.")
 
 
+async def post_init(application: Application) -> None:
+    try:
+        await application.bot.set_my_commands(BOT_COMMANDS)
+        await application.bot.set_chat_menu_button(menu_button=MenuButtonCommands())
+        LOGGER.info("Menu nativo de comandos configurado")
+    except Exception:
+        LOGGER.exception("No se pudo configurar el menu nativo de Telegram")
+
+
 def build_application() -> Application:
-    app = ApplicationBuilder().token(CONFIG.telegram_bot_token).build()
+    app = ApplicationBuilder().token(CONFIG.telegram_bot_token).post_init(post_init).build()
     handlers = {
         "start": start,
+        "menu": menu_command,
         "help": help_command,
         "whoami": whoami,
         "status": status,

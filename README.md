@@ -18,6 +18,7 @@ Bot de Telegram para administrar tareas concretas de un servidor Debian 12/13 de
 - Logs locales rotativos y logs via `journalctl`.
 - Instalador y desinstalador interactivos.
 - Menu interactivo con botones de Telegram desde `/start`.
+- Menu nativo de comandos de Telegram, accesible con `/menu` o desde el boton de comandos del cliente cuando este disponible.
 
 ## Instalacion rapida
 
@@ -80,7 +81,7 @@ sudo systemctl restart debian-telegram-admin-bot.service
 
 ## Tabla de comandos
 
-Tambien puedes usar el menu con botones ejecutando `/start`.
+Tambien puedes usar el menu con botones ejecutando `/start` o `/menu`. Al iniciar, el bot registra los comandos iniciales para que Telegram los muestre en el boton nativo de comandos del campo de escritura cuando el cliente lo soporte.
 
 | Comando | Descripcion | Requiere confirmacion |
 | --- | --- | --- |
