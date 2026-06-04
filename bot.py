@@ -25,6 +25,7 @@ CONFIRMATIONS = ConfirmationManager(CONFIG.confirm_ttl_seconds)
 LOGGER = logging.getLogger("debian-telegram-admin-bot")
 CONFIRM_TOKEN_RE = re.compile(r"^[a-f0-9]{8}$")
 SERVICES_PER_PAGE = 8
+CONTAINERS_PER_PAGE = 8
 
 
 def setup_logging(log_file: Path) -> None:
@@ -112,7 +113,7 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton("Servicios", callback_data="svcpage:0"),
             ],
             [
-                InlineKeyboardButton("Docker", callback_data="act:docker_ps"),
+                InlineKeyboardButton("Docker", callback_data="dockerpage:0"),
                 InlineKeyboardButton("Actualizaciones", callback_data="menu:updates"),
             ],
             [
@@ -192,6 +193,41 @@ def service_page_keyboard(service_names: list[str], page: int) -> InlineKeyboard
         rows.append(nav)
     rows.append([InlineKeyboardButton("Menu", callback_data="menu:main")])
     return InlineKeyboardMarkup(rows)
+
+
+def docker_page_keyboard(container_names: list[str], page: int) -> InlineKeyboardMarkup:
+    total_pages = max(1, (len(container_names) + CONTAINERS_PER_PAGE - 1) // CONTAINERS_PER_PAGE)
+    page = max(0, min(page, total_pages - 1))
+    start = page * CONTAINERS_PER_PAGE
+    rows = [
+        [InlineKeyboardButton(name, callback_data=f"dockersel:{page}:{idx}")]
+        for idx, name in enumerate(container_names[start : start + CONTAINERS_PER_PAGE])
+    ]
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("Anterior", callback_data=f"dockerpage:{page - 1}"))
+    if page < total_pages - 1:
+        nav.append(InlineKeyboardButton("Siguiente", callback_data=f"dockerpage:{page + 1}"))
+    if nav:
+        rows.append(nav)
+    rows.append([InlineKeyboardButton("Menu", callback_data="menu:main")])
+    return InlineKeyboardMarkup(rows)
+
+
+def docker_action_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("Start", callback_data="dockeraction:start"),
+                InlineKeyboardButton("Stop", callback_data="dockeraction:stop"),
+            ],
+            [
+                InlineKeyboardButton("Restart", callback_data="dockeraction:restart"),
+                InlineKeyboardButton("Contenedores", callback_data="dockerpage:0"),
+            ],
+            [InlineKeyboardButton("Menu", callback_data="menu:main")],
+        ]
+    )
 
 
 def configured_service_names() -> list[str]:
@@ -284,8 +320,9 @@ async def processes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def docker_ps(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    del context
-    await run_readonly(update, "docker_ps", docker.docker_ps)
+    if not await require_authorized(update):
+        return
+    await show_docker_page(update, 0)
 
 
 async def list_services(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -519,6 +556,113 @@ async def select_service(update: Update, context: ContextTypes.DEFAULT_TYPE, dat
     )
 
 
+async def show_docker_page(update: Update, page: int) -> None:
+    container_names = await asyncio.to_thread(
+        docker.list_container_names,
+        CONFIG.command_timeout_seconds,
+        CONFIG.max_telegram_message_length,
+    )
+    if not container_names:
+        await reply_callback(
+            update,
+            "No hay contenedores Docker o no se pudieron listar. Revisa sudoers y Docker.",
+            main_menu_keyboard(),
+        )
+        return
+    container_names = sorted(container_names)
+    total_pages = max(1, (len(container_names) + CONTAINERS_PER_PAGE - 1) // CONTAINERS_PER_PAGE)
+    page = max(0, min(page, total_pages - 1))
+    await reply_callback(
+        update,
+        f"Contenedores Docker ({len(container_names)}). Pagina {page + 1}/{total_pages}.",
+        docker_page_keyboard(container_names, page),
+    )
+
+
+async def select_docker_container(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    data: str,
+) -> None:
+    try:
+        _, page_raw, idx_raw = data.split(":", 2)
+        page = int(page_raw)
+        idx = int(idx_raw)
+    except ValueError:
+        await reply_callback(update, "Seleccion de contenedor invalida.", main_menu_keyboard())
+        return
+
+    container_names = sorted(
+        await asyncio.to_thread(
+            docker.list_container_names,
+            CONFIG.command_timeout_seconds,
+            CONFIG.max_telegram_message_length,
+        )
+    )
+    absolute_idx = page * CONTAINERS_PER_PAGE + idx
+    if absolute_idx < 0 or absolute_idx >= len(container_names):
+        await reply_callback(update, "Contenedor fuera de rango.", main_menu_keyboard())
+        return
+
+    container = container_names[absolute_idx]
+    valid, container_or_error = docker.validate_container_name(container)
+    if not valid:
+        await reply_callback(update, container_or_error, main_menu_keyboard())
+        return
+
+    context.user_data["selected_docker_container"] = container_or_error
+    await reply_callback(
+        update,
+        f"Contenedor seleccionado: {container_or_error}",
+        docker_action_keyboard(),
+    )
+
+
+async def execute_docker_button(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    action: str,
+) -> None:
+    container = context.user_data.get("selected_docker_container")
+    if not isinstance(container, str) or not container:
+        await reply_callback(
+            update,
+            "Primero selecciona un contenedor.",
+            InlineKeyboardMarkup([[InlineKeyboardButton("Contenedores", callback_data="dockerpage:0")]]),
+        )
+        return
+
+    valid, container_or_error = docker.validate_container_name(container)
+    if not valid:
+        await reply_callback(update, container_or_error, main_menu_keyboard())
+        return
+    container = container_or_error
+    description = f"docker {action} {container}"
+
+    def execute() -> system.CommandResult:
+        return docker.container_action(
+            action,
+            container,
+            CONFIG.command_timeout_seconds,
+            CONFIG.max_telegram_message_length,
+        )
+
+    if action in {"stop", "restart"}:
+        pending = CONFIRMATIONS.create(chat_id(update) or 0, description, execute)
+        LOGGER.info("Confirmacion Docker creada para %s chat_id=%s", description, chat_id(update))
+        await reply_callback(
+            update,
+            f"Accion peligrosa: {description}\n"
+            f"Confirma en {CONFIG.confirm_ttl_seconds}s con:\n/confirm {pending.token}",
+            docker_action_keyboard(),
+        )
+        return
+
+    LOGGER.info("Ejecutando boton %s chat_id=%s", description, chat_id(update))
+    result = await asyncio.to_thread(execute)
+    await reply_callback(update, result.output, docker_action_keyboard())
+
+
 async def execute_service_button(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -613,6 +757,23 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if data.startswith("svcsel:"):
         await select_service(update, context, data)
         return
+    if data.startswith("dockerpage:"):
+        try:
+            page = int(data.split(":", 1)[1])
+        except ValueError:
+            page = 0
+        await show_docker_page(update, page)
+        return
+    if data.startswith("dockersel:"):
+        await select_docker_container(update, context, data)
+        return
+    if data.startswith("dockeraction:"):
+        action = data.split(":", 1)[1]
+        if action not in {"start", "stop", "restart"}:
+            await reply_callback(update, "Accion Docker invalida.", main_menu_keyboard())
+            return
+        await execute_docker_button(update, context, action)
+        return
     if data.startswith("svcaction:"):
         action = data.split(":", 1)[1]
         if action not in {"status", "start", "stop", "restart", "logs"}:
@@ -627,7 +788,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         "act:disk": ("disk", system.disk, system_menu_keyboard()),
         "act:ip": ("ip", system.local_ip, system_menu_keyboard()),
         "act:processes": ("processes", system.processes, system_menu_keyboard()),
-        "act:docker_ps": ("docker_ps", docker.docker_ps, main_menu_keyboard()),
         "act:updates": ("updates", updates.list_updates, updates_menu_keyboard()),
     }
     if data in readonly_actions:

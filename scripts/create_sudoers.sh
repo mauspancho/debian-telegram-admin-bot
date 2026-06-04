@@ -133,7 +133,7 @@ trap 'rm -f "$TMP_FILE"' EXIT
 
   echo "Cmnd_Alias DEBIAN_BOT_APT = /usr/bin/apt update, /usr/bin/apt list --upgradable, /usr/bin/apt upgrade -y"
   echo "Cmnd_Alias DEBIAN_BOT_REBOOT = /usr/sbin/reboot"
-  echo "Cmnd_Alias DEBIAN_BOT_DOCKER = /usr/bin/docker ps *"
+  echo "Cmnd_Alias DEBIAN_BOT_DOCKER = /usr/bin/docker ps *, /usr/bin/docker start *, /usr/bin/docker stop *, /usr/bin/docker restart *"
   echo
 
   aliases_joined=""

@@ -98,7 +98,7 @@ Tambien puedes usar el menu con botones ejecutando `/start`.
 | `/service_restart nombre` | Reinicia un servicio permitido | Si |
 | `/service_logs nombre` | Ultimas 80 lineas de `journalctl -u` | No |
 | `/processes` | Procesos principales por CPU, sin argumentos completos | No |
-| `/docker_ps` | Lista contenedores Docker si esta disponible | No |
+| `/docker_ps` | Abre botones con los contenedores Docker | No |
 | `/updates` | Ejecuta `apt update` y lista paquetes actualizables | No |
 | `/upgrade_confirm` | Solicita confirmacion para `apt upgrade -y` | Si |
 | `/reboot_confirm` | Solicita confirmacion para reiniciar el servidor | Si |
@@ -343,10 +343,21 @@ Comprueba que el comando solicitado coincide exactamente con lo generado en `/et
 
 ### Docker no lista contenedores
 
-`/docker_ps` usa sudoers limitado para ejecutar solo:
+El boton `Docker` del menu y el comando `/docker_ps` muestran botones con el nombre de cada contenedor. Al seleccionar uno, aparecen acciones:
+
+- `Start`
+- `Stop`
+- `Restart`
+
+`Stop` y `Restart` piden confirmacion con `/confirm TOKEN`.
+
+Docker usa sudoers limitado para ejecutar solo:
 
 ```bash
 /usr/bin/docker ps *
+/usr/bin/docker start *
+/usr/bin/docker stop *
+/usr/bin/docker restart *
 ```
 
 Si venias de una instalacion anterior y recibes permiso denegado contra `/var/run/docker.sock`, regenera sudoers:
