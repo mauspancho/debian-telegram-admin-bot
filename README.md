@@ -343,7 +343,7 @@ Comprueba que el comando solicitado coincide exactamente con lo generado en `/et
 
 ### Docker no lista contenedores
 
-El boton `Docker` del menu y el comando `/docker_ps` muestran botones con el nombre de cada contenedor. Al seleccionar uno, aparecen acciones:
+El boton `Docker` del menu y el comando `/docker_ps` muestran todos los contenedores en una sola lista de botones, usando solo el nombre de cada contenedor. Al seleccionar uno, aparecen acciones:
 
 - `Start`
 - `Stop`

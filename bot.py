@@ -24,9 +24,6 @@ CONFIG: BotConfig = load_config()
 CONFIRMATIONS = ConfirmationManager(CONFIG.confirm_ttl_seconds)
 LOGGER = logging.getLogger("debian-telegram-admin-bot")
 CONFIRM_TOKEN_RE = re.compile(r"^[a-f0-9]{8}$")
-SERVICES_PER_PAGE = 8
-CONTAINERS_PER_PAGE = 8
-
 
 def setup_logging(log_file: Path) -> None:
     log_file.parent.mkdir(parents=True, exist_ok=True)
@@ -177,39 +174,19 @@ def service_action_keyboard() -> InlineKeyboardMarkup:
 
 
 def service_page_keyboard(service_names: list[str], page: int) -> InlineKeyboardMarkup:
-    total_pages = max(1, (len(service_names) + SERVICES_PER_PAGE - 1) // SERVICES_PER_PAGE)
-    page = max(0, min(page, total_pages - 1))
-    start = page * SERVICES_PER_PAGE
     rows = [
-        [InlineKeyboardButton(name, callback_data=f"svcsel:{page}:{idx}")]
-        for idx, name in enumerate(service_names[start : start + SERVICES_PER_PAGE])
+        [InlineKeyboardButton(name, callback_data=f"svcsel:{idx}")]
+        for idx, name in enumerate(service_names)
     ]
-    nav = []
-    if page > 0:
-        nav.append(InlineKeyboardButton("Anterior", callback_data=f"svcpage:{page - 1}"))
-    if page < total_pages - 1:
-        nav.append(InlineKeyboardButton("Siguiente", callback_data=f"svcpage:{page + 1}"))
-    if nav:
-        rows.append(nav)
     rows.append([InlineKeyboardButton("Menu", callback_data="menu:main")])
     return InlineKeyboardMarkup(rows)
 
 
 def docker_page_keyboard(container_names: list[str], page: int) -> InlineKeyboardMarkup:
-    total_pages = max(1, (len(container_names) + CONTAINERS_PER_PAGE - 1) // CONTAINERS_PER_PAGE)
-    page = max(0, min(page, total_pages - 1))
-    start = page * CONTAINERS_PER_PAGE
     rows = [
-        [InlineKeyboardButton(name, callback_data=f"dockersel:{page}:{idx}")]
-        for idx, name in enumerate(container_names[start : start + CONTAINERS_PER_PAGE])
+        [InlineKeyboardButton(name, callback_data=f"dockersel:{idx}")]
+        for idx, name in enumerate(container_names)
     ]
-    nav = []
-    if page > 0:
-        nav.append(InlineKeyboardButton("Anterior", callback_data=f"dockerpage:{page - 1}"))
-    if page < total_pages - 1:
-        nav.append(InlineKeyboardButton("Siguiente", callback_data=f"dockerpage:{page + 1}"))
-    if nav:
-        rows.append(nav)
     rows.append([InlineKeyboardButton("Menu", callback_data="menu:main")])
     return InlineKeyboardMarkup(rows)
 
@@ -504,6 +481,7 @@ async def reply_callback(
 
 
 async def show_service_page(update: Update, page: int) -> None:
+    del page
     service_names = await asyncio.to_thread(configured_service_names)
     if not service_names:
         await reply_callback(
@@ -513,26 +491,29 @@ async def show_service_page(update: Update, page: int) -> None:
         )
         return
     service_names = sorted(service_names)
-    total_pages = max(1, (len(service_names) + SERVICES_PER_PAGE - 1) // SERVICES_PER_PAGE)
-    page = max(0, min(page, total_pages - 1))
     await reply_callback(
         update,
-        f"Servicios systemd ({len(service_names)}). Pagina {page + 1}/{total_pages}.",
-        service_page_keyboard(service_names, page),
+        f"Servicios systemd ({len(service_names)}).",
+        service_page_keyboard(service_names, 0),
     )
 
 
 async def select_service(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str) -> None:
     try:
-        _, page_raw, idx_raw = data.split(":", 2)
-        page = int(page_raw)
-        idx = int(idx_raw)
-    except ValueError:
+        parts = data.split(":")
+        if len(parts) == 2:
+            absolute_idx = int(parts[1])
+        elif len(parts) == 3:
+            page = int(parts[1])
+            idx = int(parts[2])
+            absolute_idx = page * 8 + idx
+        else:
+            raise ValueError
+    except (ValueError, IndexError):
         await reply_callback(update, "Seleccion de servicio invalida.", main_menu_keyboard())
         return
 
     service_names = sorted(await asyncio.to_thread(configured_service_names))
-    absolute_idx = page * SERVICES_PER_PAGE + idx
     if absolute_idx < 0 or absolute_idx >= len(service_names):
         await reply_callback(update, "Servicio fuera de rango.", main_menu_keyboard())
         return
@@ -557,6 +538,7 @@ async def select_service(update: Update, context: ContextTypes.DEFAULT_TYPE, dat
 
 
 async def show_docker_page(update: Update, page: int) -> None:
+    del page
     container_names = await asyncio.to_thread(
         docker.list_container_names,
         CONFIG.command_timeout_seconds,
@@ -570,12 +552,10 @@ async def show_docker_page(update: Update, page: int) -> None:
         )
         return
     container_names = sorted(container_names)
-    total_pages = max(1, (len(container_names) + CONTAINERS_PER_PAGE - 1) // CONTAINERS_PER_PAGE)
-    page = max(0, min(page, total_pages - 1))
     await reply_callback(
         update,
-        f"Contenedores Docker ({len(container_names)}). Pagina {page + 1}/{total_pages}.",
-        docker_page_keyboard(container_names, page),
+        f"Contenedores Docker ({len(container_names)}).",
+        docker_page_keyboard(container_names, 0),
     )
 
 
@@ -585,10 +565,16 @@ async def select_docker_container(
     data: str,
 ) -> None:
     try:
-        _, page_raw, idx_raw = data.split(":", 2)
-        page = int(page_raw)
-        idx = int(idx_raw)
-    except ValueError:
+        parts = data.split(":")
+        if len(parts) == 2:
+            absolute_idx = int(parts[1])
+        elif len(parts) == 3:
+            page = int(parts[1])
+            idx = int(parts[2])
+            absolute_idx = page * 8 + idx
+        else:
+            raise ValueError
+    except (ValueError, IndexError):
         await reply_callback(update, "Seleccion de contenedor invalida.", main_menu_keyboard())
         return
 
@@ -599,7 +585,6 @@ async def select_docker_container(
             CONFIG.max_telegram_message_length,
         )
     )
-    absolute_idx = page * CONTAINERS_PER_PAGE + idx
     if absolute_idx < 0 or absolute_idx >= len(container_names):
         await reply_callback(update, "Contenedor fuera de rango.", main_menu_keyboard())
         return
