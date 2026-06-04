@@ -8,12 +8,17 @@ Bot de Telegram para administrar tareas concretas de un servidor Debian 12/13 de
 
 - Telegram en modo polling, sin webhooks ni puertos entrantes.
 - Configuracion por `.env`, sin tokens hardcodeados.
-- Acceso limitado a un unico `chat_id` autorizado.
+- Acceso limitado por `chat_id`, con roles admin y readonly.
 - Usuario Linux dedicado, por defecto `debianbot`.
 - Sudoers generado con comandos concretos, no sudo global.
 - Lista blanca de servicios systemd permitidos.
 - Confirmacion en dos pasos para acciones peligrosas.
 - Validacion estricta de nombres de servicios.
+- Monitoreo basico con reporte general, chequeo de seguridad y alertas de disco.
+- Backups por targets definidos en `.env`, sin rutas arbitrarias desde Telegram.
+- Logs y estadisticas Docker con validacion estricta de contenedores.
+- Autoactualizacion controlada del bot cuando la instalacion tiene repo Git.
+- Auditoria de acciones administrativas en `logs/audit.log`.
 - Salida recortada para evitar mensajes demasiado grandes.
 - Logs locales rotativos y logs via `journalctl`.
 - Instalador y desinstalador interactivos.
@@ -33,7 +38,8 @@ sudo bash install.sh
 El instalador preguntara:
 
 - Token del bot de Telegram.
-- `chat_id` autorizado.
+- `chat_id` admin autorizado.
+- `chat_id` readonly opcionales, separados por coma.
 - Si quieres permitir controlar todos los servicios systemd instalados.
 - Servicios permitidos, por ejemplo `ssh,nginx,docker`.
 - Ruta de instalacion, por defecto `/opt/debian-telegram-admin-bot`.
@@ -69,7 +75,9 @@ sudo nano /opt/debian-telegram-admin-bot/.env
 5. Configura:
 
 ```env
-AUTHORIZED_CHAT_ID=123456789
+AUTHORIZED_CHAT_IDS=123456789
+ADMIN_CHAT_IDS=123456789
+READONLY_CHAT_IDS=
 REGISTRATION_MODE=false
 ```
 
@@ -100,6 +108,17 @@ Tambien puedes usar el menu con botones ejecutando `/start` o `/menu`. Al inicia
 | `/service_logs nombre` | Ultimas 80 lineas de `journalctl -u` | No |
 | `/processes` | Procesos principales por CPU, sin argumentos completos | No |
 | `/docker_ps` | Abre botones con los contenedores Docker | No |
+| `/docker_logs contenedor` | Muestra logs recientes de un contenedor validado | No |
+| `/docker_stats` | Muestra uso instantaneo de contenedores Docker | No |
+| `/report` | Resumen general del servidor | No |
+| `/security_check` | Revisa permisos, usuario, `.env` y sudoers | No |
+| `/disk_alerts` | Muestra discos con uso alto | No |
+| `/backup_list` | Lista targets y backups disponibles | No |
+| `/backup_create nombre` | Crea backup de un target definido en `.env` | No |
+| `/backup_restore nombre` | Restaura el ultimo backup del target definido | Si |
+| `/bot_version` | Muestra version del bot | No |
+| `/bot_update_check` | Revisa estado Git del bot instalado | No |
+| `/bot_update` | Ejecuta `git pull --ff-only` en el repo permitido | Si |
 | `/updates` | Ejecuta `apt update` y lista paquetes actualizables | No |
 | `/upgrade_confirm` | Solicita confirmacion para `apt upgrade -y` | Si |
 | `/reboot_confirm` | Solicita confirmacion para reiniciar el servidor | Si |
@@ -173,6 +192,9 @@ debian-telegram-admin-bot/
     |-- services.py
     |-- docker.py
     |-- updates.py
+    |-- monitoring.py
+    |-- backups.py
+    |-- bot_update.py
     `-- security.py
 ```
 
@@ -188,16 +210,41 @@ Variables principales:
 
 ```env
 TELEGRAM_BOT_TOKEN=REEMPLAZA_CON_TOKEN_DE_BOTFATHER
-AUTHORIZED_CHAT_ID=123456789
+AUTHORIZED_CHAT_IDS=123456789
+ADMIN_CHAT_IDS=123456789
+READONLY_CHAT_IDS=
 REGISTRATION_MODE=false
 ALLOWED_SERVICES=ssh,nginx
 SERVICE_NAME=debian-telegram-admin-bot
 INSTALL_PATH=/opt/debian-telegram-admin-bot
 LOG_FILE=/opt/debian-telegram-admin-bot/logs/bot.log
+AUDIT_LOG_FILE=/opt/debian-telegram-admin-bot/logs/audit.log
+BACKUP_TARGETS=etc-nginx:/etc/nginx
+BACKUP_PATH=/opt/debian-telegram-admin-bot/backups
+BOT_REPO_PATH=
 CONFIRM_TTL_SECONDS=180
 COMMAND_TIMEOUT_SECONDS=30
 MAX_TELEGRAM_MESSAGE_LENGTH=3500
 ```
+
+## Roles
+
+`ADMIN_CHAT_IDS` puede consultar y ejecutar acciones con confirmacion. `READONLY_CHAT_IDS` solo puede usar comandos de consulta como estado, disco, logs, reportes, backups listados y version del bot. `AUTHORIZED_CHAT_IDS` debe contener la union de ambos roles. La variable antigua `AUTHORIZED_CHAT_ID` se acepta por compatibilidad, pero no es la forma recomendada para instalaciones nuevas.
+
+## Backups
+
+Los backups no aceptan rutas desde Telegram. Define nombres permitidos en `.env`:
+
+```env
+BACKUP_TARGETS=nginx:/etc/nginx,app:/srv/app/config
+BACKUP_PATH=/opt/debian-telegram-admin-bot/backups
+```
+
+Despues usa `/backup_create nginx`, `/backup_list` y `/backup_restore nginx`. La restauracion siempre requiere `/confirm TOKEN` y necesita que el usuario del bot tenga permisos de escritura sobre el destino.
+
+## Autoactualizacion
+
+`/bot_update_check` y `/bot_update` solo funcionan si `INSTALL_PATH` contiene una carpeta `.git` o si defines `BOT_REPO_PATH` apuntando a un repo Git local. `/bot_update` usa `git pull --ff-only` y requiere confirmacion. No se ejecutan comandos arbitrarios ni scripts remotos.
 
 ## Agregar servicios permitidos
 
@@ -289,13 +336,14 @@ sudo systemctl status debian-telegram-admin-bot.service
 
 - Usa un bot de Telegram dedicado solo para este servidor.
 - No agregues el usuario `debianbot` al grupo `docker` salvo que aceptes el riesgo equivalente a root.
-- Mantiene corta la lista `ALLOWED_SERVICES`.
+- Manten corta la lista `ALLOWED_SERVICES`.
 - Evita permitir servicios criticos que no necesitas administrar por Telegram.
 - Usa un `chat_id` de usuario privado, no de grupos, salvo que entiendas el riesgo operativo.
 - Protege tu cuenta de Telegram con 2FA.
 - Revisa periodicamente `/etc/sudoers.d/debian-telegram-admin-bot`.
-- Revisa logs despues de cada accion administrativa.
-- Mantiene Debian actualizado.
+- Revisa `logs/audit.log` despues de cada accion administrativa.
+- Manten `BACKUP_TARGETS` con rutas minimas y revisadas.
+- Manten Debian actualizado.
 - Rota el token en BotFather si sospechas exposicion.
 - No publiques `.env`, logs reales ni capturas con datos sensibles.
 
@@ -312,13 +360,13 @@ Verifica que el token sea correcto y que el servidor tenga salida a Internet.
 
 ### Recibo "Acceso denegado"
 
-Comprueba `AUTHORIZED_CHAT_ID`:
+Comprueba `AUTHORIZED_CHAT_IDS`, `ADMIN_CHAT_IDS` y `READONLY_CHAT_IDS`:
 
 ```bash
-sudo grep AUTHORIZED_CHAT_ID /opt/debian-telegram-admin-bot/.env
+sudo grep -E 'AUTHORIZED_CHAT_IDS|ADMIN_CHAT_IDS|READONLY_CHAT_IDS' /opt/debian-telegram-admin-bot/.env
 ```
 
-Si instalaste en modo registro temporal, ejecuta `/whoami`, actualiza `.env` y cambia `REGISTRATION_MODE=false`.
+Si instalaste en modo registro temporal, ejecuta `/whoami`, actualiza `.env`, agrega tu chat a `AUTHORIZED_CHAT_IDS` y `ADMIN_CHAT_IDS`, y cambia `REGISTRATION_MODE=false`.
 
 ### Un servicio aparece como no permitido
 
@@ -359,6 +407,8 @@ Docker usa sudoers limitado para ejecutar solo:
 /usr/bin/docker start *
 /usr/bin/docker stop *
 /usr/bin/docker restart *
+/usr/bin/docker logs *
+/usr/bin/docker stats *
 ```
 
 Si venias de una instalacion anterior y recibes permiso denegado contra `/var/run/docker.sock`, regenera sudoers:

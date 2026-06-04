@@ -14,34 +14,43 @@ This project is in its first public-ready stage. Until stable releases are tagge
 The bot is designed for a narrow administration surface:
 
 - Telegram polling only; no inbound HTTP port is opened by the bot.
-- One authorized Telegram `chat_id`.
+- Authorized Telegram `chat_id` lists with admin and readonly roles.
 - No generic shell command endpoint.
 - Only pre-defined Python handlers can execute system actions.
 - Services must be listed in `ALLOWED_SERVICES`.
 - Service names are validated before use.
 - Commands use `subprocess.run` with argument lists and `shell=False`.
 - Dangerous actions require a temporary `/confirm TOKEN`.
+- Administrative actions are appended to `logs/audit.log`.
 - The bot should run as a dedicated non-root Linux user.
 - Sudoers should permit only the generated command list.
+- Backup commands only accept target names defined in `.env`; they never accept arbitrary paths from Telegram.
+- Bot self-update only runs against a local Git repository detected in `INSTALL_PATH` or configured with `BOT_REPO_PATH`.
 
 ## Known risks and limitations
 
 - Anyone controlling the authorized Telegram account can trigger allowed administrative actions.
 - Telegram bot tokens are bearer secrets. If leaked, rotate the token immediately in BotFather.
 - Adding `debianbot` to the Docker group can effectively grant root-equivalent control.
+- Docker start/stop/restart/logs/stats use validated container names, but Docker administration remains sensitive.
 - Allowing restart/stop of critical services can cause outages.
 - `apt upgrade -y` can change system state significantly even though it is confirmation-gated.
+- Backup restore can overwrite configured target paths and should be limited to trusted admins.
+- Bot update can change the running code if the local Git repo is writable by the bot user.
 - This project does not replace host firewalling, SSH hardening, patch management, backups, or monitoring.
 
 ## Recommended deployment controls
 
 - Use a dedicated bot token per server.
 - Use a private 1:1 chat id where possible.
+- Put only trusted operators in `ADMIN_CHAT_IDS`; use `READONLY_CHAT_IDS` for monitoring-only users.
 - Enable 2FA on the Telegram account that controls the bot.
 - Keep `ALLOWED_SERVICES` minimal.
 - Use `ALLOW_ALL_SYSTEMD_SERVICES=true` only on servers where the authorized Telegram account is trusted to control every installed service.
 - Review `/etc/sudoers.d/debian-telegram-admin-bot` after installation.
 - Keep `.env` out of Git and restrict file permissions.
+- Keep `logs/audit.log` writable only by the bot user and review it regularly.
+- Keep `BACKUP_TARGETS` minimal and avoid writable targets that could affect system boot or SSH access unless you need them.
 - Periodically review `journalctl` and local bot logs.
 - Rotate secrets after any suspected exposure.
 
@@ -71,5 +80,6 @@ Use placeholders such as:
 
 ```text
 TELEGRAM_BOT_TOKEN=REDACTED
-AUTHORIZED_CHAT_ID=123456789
+AUTHORIZED_CHAT_IDS=123456789
+ADMIN_CHAT_IDS=123456789
 ```

@@ -59,6 +59,20 @@ validate_service_csv() {
   done
 }
 
+validate_chat_id_csv() {
+  local csv="$1"
+  IFS=',' read -r -a chat_ids <<< "$csv"
+  for raw in "${chat_ids[@]}"; do
+    chat_id="${raw#"${raw%%[![:space:]]*}"}"
+    chat_id="${chat_id%"${chat_id##*[![:space:]]}"}"
+    [[ -z "$chat_id" ]] && continue
+    if [[ ! "$chat_id" =~ ^-?[0-9]+$ ]]; then
+      echo "Chat ID invalido: $chat_id" >&2
+      exit 1
+    fi
+  done
+}
+
 validate_install_path() {
   local path="$1"
   if [[ ! "$path" =~ ^/[A-Za-z0-9._/@+-]+$ ]]; then
@@ -73,7 +87,7 @@ validate_install_path() {
 
 install_dependencies() {
   apt-get update
-  apt-get install -y python3 python3-venv python3-pip sudo ca-certificates
+  apt-get install -y python3 python3-venv python3-pip sudo ca-certificates git
 }
 
 create_bot_user() {
@@ -117,23 +131,31 @@ copy_project() {
 write_env() {
   local env_file="$1"
   local token="$2"
-  local chat_id="$3"
-  local registration_mode="$4"
-  local allow_all_services="$5"
-  local services="$6"
-  local service_name="$7"
-  local install_path="$8"
+  local authorized_chat_ids="$3"
+  local admin_chat_ids="$4"
+  local readonly_chat_ids="$5"
+  local registration_mode="$6"
+  local allow_all_services="$7"
+  local services="$8"
+  local service_name="$9"
+  local install_path="${10}"
 
   umask 077
   cat > "$env_file" <<EOF
 TELEGRAM_BOT_TOKEN=$token
-AUTHORIZED_CHAT_ID=$chat_id
+AUTHORIZED_CHAT_IDS=$authorized_chat_ids
+ADMIN_CHAT_IDS=$admin_chat_ids
+READONLY_CHAT_IDS=$readonly_chat_ids
 REGISTRATION_MODE=$registration_mode
 ALLOW_ALL_SYSTEMD_SERVICES=$allow_all_services
 ALLOWED_SERVICES=$services
 SERVICE_NAME=$service_name
 INSTALL_PATH=$install_path
 LOG_FILE=$install_path/logs/bot.log
+AUDIT_LOG_FILE=$install_path/logs/audit.log
+BACKUP_TARGETS=
+BACKUP_PATH=$install_path/backups
+BOT_REPO_PATH=
 CONFIRM_TTL_SECONDS=180
 COMMAND_TIMEOUT_SECONDS=30
 MAX_TELEGRAM_MESSAGE_LENGTH=3500
@@ -183,7 +205,7 @@ main() {
     exit 1
   fi
 
-  read -r -p "Chat ID autorizado (deja vacio para modo registro temporal): " chat_id
+  read -r -p "Chat ID admin autorizado (deja vacio para modo registro temporal): " chat_id
   registration_mode="false"
   if [[ -z "$chat_id" ]]; then
     registration_mode="true"
@@ -191,6 +213,18 @@ main() {
   elif [[ ! "$chat_id" =~ ^-?[0-9]+$ ]]; then
     echo "El chat_id debe ser numerico." >&2
     exit 1
+  fi
+
+  read -r -p "Chat IDs readonly separados por coma (opcional): " readonly_chat_ids
+  validate_chat_id_csv "$readonly_chat_ids"
+  admin_chat_ids="$chat_id"
+  authorized_chat_ids="$chat_id"
+  if [[ -n "$readonly_chat_ids" ]]; then
+    if [[ -n "$authorized_chat_ids" ]]; then
+      authorized_chat_ids="${authorized_chat_ids},${readonly_chat_ids}"
+    else
+      authorized_chat_ids="$readonly_chat_ids"
+    fi
   fi
 
   read -r -p "Permitir controlar todos los servicios systemd instalados? [s/N]: " allow_all_answer
@@ -232,9 +266,20 @@ main() {
   "$install_path/venv/bin/python" -m pip install --upgrade pip
   "$install_path/venv/bin/pip" install -r "$install_path/requirements.txt"
 
-  write_env "$install_path/.env" "$token" "$chat_id" "$registration_mode" "$allow_all_services" "$services" "$service_name" "$install_path"
+  write_env \
+    "$install_path/.env" \
+    "$token" \
+    "$authorized_chat_ids" \
+    "$admin_chat_ids" \
+    "$readonly_chat_ids" \
+    "$registration_mode" \
+    "$allow_all_services" \
+    "$services" \
+    "$service_name" \
+    "$install_path"
   chown -R root:root "$install_path"
   install -d -o "$bot_user" -g "$bot_user" -m 0750 "$install_path/logs"
+  install -d -o "$bot_user" -g "$bot_user" -m 0750 "$install_path/backups"
   chown root:"$bot_user" "$install_path/.env"
   chmod 0640 "$install_path/.env"
   chmod 0755 "$install_path"

@@ -23,7 +23,7 @@ from telegram.ext import (
 )
 
 from config import BotConfig, load_config
-from modules import docker, services, system, updates
+from modules import backups, bot_update, docker, monitoring, services, system, updates
 from modules.security import ConfirmationManager
 
 
@@ -42,11 +42,25 @@ BOT_COMMANDS = [
     BotCommand("ip", "Mostrar IP local"),
     BotCommand("services", "Listar servicios"),
     BotCommand("docker_ps", "Abrir menu Docker"),
+    BotCommand("docker_logs", "Logs de contenedor"),
+    BotCommand("docker_stats", "Stats Docker"),
+    BotCommand("report", "Reporte general"),
+    BotCommand("security_check", "Chequeo de seguridad"),
+    BotCommand("disk_alerts", "Alertas de disco"),
+    BotCommand("backup_list", "Listar backups"),
+    BotCommand("backup_create", "Crear backup"),
+    BotCommand("backup_restore", "Restaurar backup"),
+    BotCommand("bot_update_check", "Revisar update bot"),
+    BotCommand("bot_version", "Version del bot"),
+    BotCommand("bot_update", "Actualizar bot"),
     BotCommand("updates", "Buscar actualizaciones"),
 ]
 
 def setup_logging(log_file: Path) -> None:
     log_file.parent.mkdir(parents=True, exist_ok=True)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("telegram").setLevel(logging.WARNING)
+    logging.getLogger("urllib3").setLevel(logging.WARNING)
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
@@ -57,13 +71,30 @@ def setup_logging(log_file: Path) -> None:
     )
 
 
+def append_audit(chat: int | None, action: str, detail: str) -> None:
+    CONFIG.audit_log_file.parent.mkdir(parents=True, exist_ok=True)
+    safe_detail = detail.replace(CONFIG.telegram_bot_token, "[REDACTED]")
+    with CONFIG.audit_log_file.open("a", encoding="utf-8") as fh:
+        fh.write(f"chat_id={chat} action={action} detail={safe_detail}\n")
+
+
 def chat_id(update: Update) -> int | None:
     return update.effective_chat.id if update.effective_chat else None
 
 
 def is_authorized(update: Update) -> bool:
     cid = chat_id(update)
-    return CONFIG.authorized_chat_id is not None and cid == CONFIG.authorized_chat_id
+    return cid is not None and cid in CONFIG.authorized_chat_ids
+
+
+def is_admin(update: Update) -> bool:
+    cid = chat_id(update)
+    return cid is not None and cid in CONFIG.admin_chat_ids
+
+
+def is_readonly(update: Update) -> bool:
+    cid = chat_id(update)
+    return cid is not None and cid in CONFIG.readonly_chat_ids
 
 
 async def send_text(
@@ -114,6 +145,17 @@ def help_text() -> str:
             "/service_logs nombre",
             "/processes - procesos principales",
             "/docker_ps - contenedores Docker",
+            "/docker_logs contenedor - logs Docker",
+            "/docker_stats - estadisticas Docker",
+            "/report - reporte general",
+            "/security_check - chequeo de seguridad",
+            "/disk_alerts - alertas de disco",
+            "/backup_list - lista backups",
+            "/backup_create nombre - crea backup",
+            "/backup_restore nombre - restaura backup con confirmacion",
+            "/bot_version - version del bot",
+            "/bot_update_check - revisa actualizaciones del bot",
+            "/bot_update - actualiza bot con confirmacion",
             "/updates - apt update y lista de actualizaciones",
             "/upgrade_confirm - solicita confirmacion para apt upgrade -y",
             "/reboot_confirm - solicita confirmacion para reiniciar",
@@ -137,6 +179,10 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton("Ayuda", callback_data="menu:help"),
                 InlineKeyboardButton("Whoami", callback_data="act:whoami"),
             ],
+            [
+                InlineKeyboardButton("Reporte", callback_data="act:report"),
+                InlineKeyboardButton("Backups", callback_data="act:backup_list"),
+            ],
         ]
     )
 
@@ -154,8 +200,9 @@ def system_menu_keyboard() -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton("Procesos", callback_data="act:processes"),
-                InlineKeyboardButton("Volver", callback_data="menu:main"),
+                InlineKeyboardButton("Discos altos", callback_data="act:disk_alerts"),
             ],
+            [InlineKeyboardButton("Volver", callback_data="menu:main")],
         ]
     )
 
@@ -272,12 +319,20 @@ async def require_authorized(update: Update) -> bool:
     return False
 
 
+async def require_admin(update: Update) -> bool:
+    if is_admin(update):
+        return True
+    LOGGER.warning("Accion admin denegada chat_id=%s", chat_id(update))
+    await send_text(update, "Acceso denegado. Esta accion requiere rol admin.")
+    return False
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if CONFIG.registration_mode and CONFIG.authorized_chat_id is None:
         await send_text(
             update,
             "Modo registro activo. Ejecuta /whoami para ver tu chat_id y luego fija "
-            "AUTHORIZED_CHAT_ID en el archivo .env.",
+            "AUTHORIZED_CHAT_IDS y ADMIN_CHAT_IDS en el archivo .env.",
         )
         return
     if not await require_authorized(update):
@@ -353,6 +408,38 @@ async def docker_ps(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await show_docker_page(update, 0)
 
 
+async def docker_logs(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await require_authorized(update):
+        return
+    args = command_args(context)
+    if len(args) != 1:
+        await send_text(update, "Uso: /docker_logs contenedor")
+        return
+    valid, container_or_error = docker.validate_container_name(args[0])
+    if not valid:
+        await send_text(update, container_or_error)
+        return
+    result = await asyncio.to_thread(
+        docker.container_logs,
+        container_or_error,
+        CONFIG.command_timeout_seconds,
+        CONFIG.max_telegram_message_length,
+    )
+    await send_text(update, result.output)
+
+
+async def docker_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    del context
+    if not await require_authorized(update):
+        return
+    result = await asyncio.to_thread(
+        docker.docker_stats,
+        CONFIG.command_timeout_seconds,
+        CONFIG.max_telegram_message_length,
+    )
+    await send_text(update, result.output)
+
+
 async def list_services(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     del context
     if not await require_authorized(update):
@@ -366,6 +453,137 @@ async def list_services(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await send_text(update, text)
 
 
+async def report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    del context
+    await run_readonly(update, "report", monitoring.report)
+
+
+async def security_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    del context
+    if not await require_admin(update):
+        return
+    result = await asyncio.to_thread(
+        monitoring.security_check,
+        CONFIG.install_path,
+        CONFIG.log_file,
+        CONFIG.service_name,
+        CONFIG.command_timeout_seconds,
+        CONFIG.max_telegram_message_length,
+    )
+    await send_text(update, result.output)
+
+
+async def disk_alerts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    del context
+    if not await require_authorized(update):
+        return
+    result = await asyncio.to_thread(
+        monitoring.disk_alerts,
+        CONFIG.command_timeout_seconds,
+        CONFIG.max_telegram_message_length,
+    )
+    await send_text(update, result.output)
+
+
+async def backup_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    del context
+    if not await require_authorized(update):
+        return
+    result = backups.list_backups(
+        CONFIG.backup_targets,
+        CONFIG.backup_path,
+        CONFIG.max_telegram_message_length,
+    )
+    await send_text(update, result.output)
+
+
+async def backup_create(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await require_admin(update):
+        return
+    args = command_args(context)
+    if len(args) != 1:
+        await send_text(update, "Uso: /backup_create nombre")
+        return
+    result = await asyncio.to_thread(
+        backups.create_backup,
+        args[0],
+        CONFIG.backup_targets,
+        CONFIG.backup_path,
+        CONFIG.max_telegram_message_length,
+    )
+    append_audit(chat_id(update), "backup_create", args[0])
+    await send_text(update, result.output)
+
+
+async def backup_restore(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await require_admin(update):
+        return
+    args = command_args(context)
+    if len(args) != 1:
+        await send_text(update, "Uso: /backup_restore nombre")
+        return
+    name = args[0]
+
+    def execute() -> system.CommandResult:
+        return backups.restore_backup(
+            name,
+            CONFIG.backup_targets,
+            CONFIG.backup_path,
+            CONFIG.max_telegram_message_length,
+        )
+
+    pending = CONFIRMATIONS.create(chat_id(update) or 0, f"backup restore {name}", execute)
+    append_audit(chat_id(update), "confirm_created", f"backup restore {name}")
+    await send_text(
+        update,
+        f"Accion peligrosa: restaurar backup {name}\n"
+        f"Confirma en {CONFIG.confirm_ttl_seconds}s con:\n/confirm {pending.token}",
+    )
+
+
+async def bot_version(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    del context
+    if not await require_authorized(update):
+        return
+    await send_text(update, bot_update.version(CONFIG.max_telegram_message_length).output)
+
+
+async def bot_update_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    del context
+    if not await require_admin(update):
+        return
+    result = await asyncio.to_thread(
+        bot_update.update_check,
+        CONFIG.install_path,
+        CONFIG.bot_repo_path,
+        CONFIG.command_timeout_seconds,
+        CONFIG.max_telegram_message_length,
+    )
+    await send_text(update, result.output)
+
+
+async def bot_update_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    del context
+    if not await require_admin(update):
+        return
+
+    def execute() -> system.CommandResult:
+        return bot_update.update_bot(
+            CONFIG.install_path,
+            CONFIG.bot_repo_path,
+            CONFIG.command_timeout_seconds,
+            CONFIG.max_telegram_message_length,
+        )
+
+    pending = CONFIRMATIONS.create(chat_id(update) or 0, "bot update", execute)
+    append_audit(chat_id(update), "confirm_created", "bot update")
+    await send_text(
+        update,
+        f"Accion peligrosa: actualizar bot\n"
+        f"Confirma en {CONFIG.confirm_ttl_seconds}s con:\n/confirm {pending.token}",
+    )
+
+
 async def service_command(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -373,6 +591,8 @@ async def service_command(
     dangerous: bool = False,
 ) -> None:
     if not await require_authorized(update):
+        return
+    if action in {"start", "stop", "restart"} and not await require_admin(update):
         return
     args = command_args(context)
     if len(args) != 1:
@@ -401,6 +621,7 @@ async def service_command(
 
     if dangerous:
         pending = CONFIRMATIONS.create(chat_id(update) or 0, description, execute)
+        append_audit(chat_id(update), "confirm_created", description)
         LOGGER.info("Confirmacion creada para %s chat_id=%s", description, chat_id(update))
         await send_text(
             update,
@@ -410,6 +631,7 @@ async def service_command(
         return
 
     LOGGER.info("Ejecutando %s chat_id=%s", description, chat_id(update))
+    append_audit(chat_id(update), "service_action", description)
     result = await asyncio.to_thread(execute)
     await send_text(update, result.output)
 
@@ -459,12 +681,14 @@ async def service_logs(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 async def list_updates(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     del context
+    if not await require_admin(update):
+        return
     await run_readonly(update, "updates", updates.list_updates)
 
 
 async def upgrade_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     del context
-    if not await require_authorized(update):
+    if not await require_admin(update):
         return
 
     def execute() -> system.CommandResult:
@@ -474,6 +698,7 @@ async def upgrade_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         )
 
     pending = CONFIRMATIONS.create(chat_id(update) or 0, "apt upgrade -y", execute)
+    append_audit(chat_id(update), "confirm_created", "apt upgrade -y")
     LOGGER.info("Confirmacion creada para apt upgrade chat_id=%s", chat_id(update))
     await send_text(
         update,
@@ -484,7 +709,7 @@ async def upgrade_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 async def reboot_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     del context
-    if not await require_authorized(update):
+    if not await require_admin(update):
         return
 
     def execute() -> system.CommandResult:
@@ -495,6 +720,7 @@ async def reboot_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
 
     pending = CONFIRMATIONS.create(chat_id(update) or 0, "reboot", execute)
+    append_audit(chat_id(update), "confirm_created", "reboot")
     LOGGER.info("Confirmacion creada para reboot chat_id=%s", chat_id(update))
     await send_text(
         update,
@@ -504,7 +730,7 @@ async def reboot_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await require_authorized(update):
+    if not await require_admin(update):
         return
     args = command_args(context)
     if len(args) != 1 or not CONFIRM_TOKEN_RE.fullmatch(args[0]):
@@ -517,6 +743,7 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     LOGGER.warning("Ejecutando accion confirmada: %s chat_id=%s", description, chat_id(update))
+    append_audit(chat_id(update), "confirmed_action", description)
     await send_text(update, f"Ejecutando: {description}")
     result = await asyncio.to_thread(action)
     await send_text(update, result.output)
@@ -659,6 +886,8 @@ async def execute_docker_button(
     context: ContextTypes.DEFAULT_TYPE,
     action: str,
 ) -> None:
+    if not await require_admin(update):
+        return
     container = context.user_data.get("selected_docker_container")
     if not isinstance(container, str) or not container:
         await reply_callback(
@@ -685,6 +914,7 @@ async def execute_docker_button(
 
     if action in {"stop", "restart"}:
         pending = CONFIRMATIONS.create(chat_id(update) or 0, description, execute)
+        append_audit(chat_id(update), "confirm_created", description)
         LOGGER.info("Confirmacion Docker creada para %s chat_id=%s", description, chat_id(update))
         await reply_callback(
             update,
@@ -695,6 +925,7 @@ async def execute_docker_button(
         return
 
     LOGGER.info("Ejecutando boton %s chat_id=%s", description, chat_id(update))
+    append_audit(chat_id(update), "docker_action", description)
     result = await asyncio.to_thread(execute)
     await reply_callback(update, result.output, docker_action_keyboard())
 
@@ -724,6 +955,9 @@ async def execute_service_button(
     service = service_or_error
     description = f"systemctl {action} {service}"
 
+    if action in {"start", "stop", "restart"} and not await require_admin(update):
+        return
+
     if action == "logs":
         LOGGER.info("Boton journalctl para %s chat_id=%s", service, chat_id(update))
         result = await asyncio.to_thread(
@@ -745,6 +979,7 @@ async def execute_service_button(
 
     if action in {"stop", "restart"}:
         pending = CONFIRMATIONS.create(chat_id(update) or 0, description, execute)
+        append_audit(chat_id(update), "confirm_created", description)
         LOGGER.info("Confirmacion creada desde boton para %s chat_id=%s", description, chat_id(update))
         await reply_callback(
             update,
@@ -755,6 +990,7 @@ async def execute_service_button(
         return
 
     LOGGER.info("Ejecutando boton %s chat_id=%s", description, chat_id(update))
+    append_audit(chat_id(update), "service_action", description)
     result = await asyncio.to_thread(execute)
     await reply_callback(update, result.output, service_action_keyboard())
 
@@ -824,7 +1060,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         "act:disk": ("disk", system.disk, system_menu_keyboard()),
         "act:ip": ("ip", system.local_ip, system_menu_keyboard()),
         "act:processes": ("processes", system.processes, system_menu_keyboard()),
-        "act:updates": ("updates", updates.list_updates, updates_menu_keyboard()),
+        "act:report": ("report", monitoring.report, main_menu_keyboard()),
+        "act:disk_alerts": ("disk_alerts", monitoring.disk_alerts, system_menu_keyboard()),
     }
     if data in readonly_actions:
         description, func, keyboard = readonly_actions[data]
@@ -839,7 +1076,27 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if data == "act:whoami":
         await reply_callback(update, f"Tu chat_id es: {chat_id(update)}", main_menu_keyboard())
         return
+    if data == "act:backup_list":
+        result = backups.list_backups(
+            CONFIG.backup_targets,
+            CONFIG.backup_path,
+            CONFIG.max_telegram_message_length,
+        )
+        await reply_callback(update, result.output, main_menu_keyboard())
+        return
+    if data == "act:updates":
+        if not await require_admin(update):
+            return
+        result = await asyncio.to_thread(
+            updates.list_updates,
+            CONFIG.command_timeout_seconds,
+            CONFIG.max_telegram_message_length,
+        )
+        await reply_callback(update, result.output, updates_menu_keyboard())
+        return
     if data == "danger:upgrade":
+        if not await require_admin(update):
+            return
         def execute_upgrade() -> system.CommandResult:
             return updates.upgrade(
                 CONFIG.command_timeout_seconds * 20,
@@ -847,6 +1104,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             )
 
         pending = CONFIRMATIONS.create(chat_id(update) or 0, "apt upgrade -y", execute_upgrade)
+        append_audit(chat_id(update), "confirm_created", "apt upgrade -y")
         await reply_callback(
             update,
             f"Accion peligrosa: apt upgrade -y\n"
@@ -855,6 +1113,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         )
         return
     if data == "danger:reboot":
+        if not await require_admin(update):
+            return
         def execute_reboot() -> system.CommandResult:
             return system.run_command(
                 ["sudo", "/usr/sbin/reboot"],
@@ -863,6 +1123,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             )
 
         pending = CONFIRMATIONS.create(chat_id(update) or 0, "reboot", execute_reboot)
+        append_audit(chat_id(update), "confirm_created", "reboot")
         await reply_callback(
             update,
             f"Accion peligrosa: reiniciar el servidor\n"
@@ -883,8 +1144,8 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 async def post_init(application: Application) -> None:
     try:
         await configure_native_menu(application)
-        if CONFIG.authorized_chat_id is not None:
-            await configure_native_menu(application, CONFIG.authorized_chat_id)
+        for cid in CONFIG.authorized_chat_ids:
+            await configure_native_menu(application, cid)
         LOGGER.info("Menu nativo de comandos configurado")
     except Exception:
         LOGGER.exception("No se pudo configurar el menu nativo de Telegram")
@@ -902,6 +1163,15 @@ def build_application() -> Application:
         "disk": disk,
         "ip": ip,
         "services": list_services,
+        "report": report,
+        "security_check": security_check,
+        "disk_alerts": disk_alerts,
+        "backup_list": backup_list,
+        "backup_create": backup_create,
+        "backup_restore": backup_restore,
+        "bot_version": bot_version,
+        "bot_update_check": bot_update_check,
+        "bot_update": bot_update_command,
         "service_status": service_status,
         "service_start": service_start,
         "service_stop": service_stop,
@@ -909,6 +1179,8 @@ def build_application() -> Application:
         "service_logs": service_logs,
         "processes": processes,
         "docker_ps": docker_ps,
+        "docker_logs": docker_logs,
+        "docker_stats": docker_stats,
         "updates": list_updates,
         "upgrade_confirm": upgrade_confirm,
         "reboot_confirm": reboot_confirm,

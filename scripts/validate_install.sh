@@ -15,6 +15,9 @@ required_files=(
   "$INSTALL_PATH/modules/docker.py"
   "$INSTALL_PATH/modules/updates.py"
   "$INSTALL_PATH/modules/security.py"
+  "$INSTALL_PATH/modules/monitoring.py"
+  "$INSTALL_PATH/modules/backups.py"
+  "$INSTALL_PATH/modules/bot_update.py"
 )
 
 for file in "${required_files[@]}"; do
@@ -36,6 +39,9 @@ fi
   "$INSTALL_PATH/modules/services.py" \
   "$INSTALL_PATH/modules/docker.py" \
   "$INSTALL_PATH/modules/updates.py" \
-  "$INSTALL_PATH/modules/security.py"
+  "$INSTALL_PATH/modules/security.py" \
+  "$INSTALL_PATH/modules/monitoring.py" \
+  "$INSTALL_PATH/modules/backups.py" \
+  "$INSTALL_PATH/modules/bot_update.py"
 
 echo "Validacion completada."

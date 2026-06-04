@@ -8,6 +8,12 @@ The format is based on Keep a Changelog, and this project follows semantic versi
 
 ### Added
 
+- Monitoring module with `/report`, `/security_check`, and `/disk_alerts`.
+- Backup module with `.env` defined targets, `/backup_list`, `/backup_create`, and confirmation-gated `/backup_restore`.
+- Multi-role authorization with `AUTHORIZED_CHAT_IDS`, `ADMIN_CHAT_IDS`, and `READONLY_CHAT_IDS`.
+- Docker logs and stats commands with strict container-name validation.
+- Bot version and controlled self-update commands for local Git installations.
+- Administrative audit log at `logs/audit.log`.
 - Initial Telegram polling bot for Debian administration.
 - Interactive `install.sh` and `uninstall.sh`.
 - Dedicated Linux user support.
@@ -25,6 +31,9 @@ The format is based on Keep a Changelog, and this project follows semantic versi
 - No arbitrary command execution endpoint.
 - No `shell=True` subprocess calls.
 - Strict service-name validation.
+- Strict Docker container-name validation.
+- Backup commands do not accept arbitrary paths from Telegram.
+- Stop, restart, reboot, upgrade, restore, and bot update actions require confirmation.
 - `.env` excluded from Git and installed with restricted permissions.
 - Installed application code owned by root, with write access limited to logs.
 

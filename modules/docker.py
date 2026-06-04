@@ -79,3 +79,33 @@ def container_action(
         timeout=timeout,
         max_chars=max_chars,
     )
+
+
+def container_logs(container_name: str, timeout: int, max_chars: int) -> CommandResult:
+    if not _docker_available():
+        return CommandResult(False, "Docker no esta instalado en /usr/bin/docker.")
+    valid, container = validate_container_name(container_name)
+    if not valid:
+        return CommandResult(False, container)
+    return run_command(
+        ["sudo", "/usr/bin/docker", "logs", "--tail", "100", container],
+        timeout=timeout,
+        max_chars=max_chars,
+    )
+
+
+def docker_stats(timeout: int, max_chars: int) -> CommandResult:
+    if not _docker_available():
+        return CommandResult(False, "Docker no esta instalado en /usr/bin/docker.")
+    return run_command(
+        [
+            "sudo",
+            "/usr/bin/docker",
+            "stats",
+            "--no-stream",
+            "--format",
+            "table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.NetIO}}\t{{.BlockIO}}",
+        ],
+        timeout=timeout,
+        max_chars=max_chars,
+    )
